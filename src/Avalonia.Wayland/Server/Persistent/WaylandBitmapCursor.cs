@@ -9,6 +9,7 @@ using Avalonia.Wayland.Server.Interop;
 using Avalonia.Wayland.Server.Transient;
 using Avalonia.Wayland.Server.Transient.Rendering;
 using NWayland.Protocols.Wayland;
+using static NWayland.Protocols.CursorShapeV1.WpCursorShapeDeviceV1;
 
 namespace Avalonia.Wayland.Server.Persistent;
 
@@ -58,8 +59,8 @@ sealed class WaylandBitmapCursor : WaylandCursor, IPersistentWaylandObject, IWay
     // Cursor buffers are created outside the throttled render loop, so flush their fds eagerly.
     public bool EnforceBufferCreationRoundtrip => true;
 
-    public override WaylandCursorImage? Resolve(WaylandGlobals globals)
-        => _wlSurface is { } surface ? new WaylandCursorImage(surface, _hotspotX, _hotspotY) : null;
+    public override (WaylandCursorImage? image, ShapeEnum? shape) Resolve(WaylandGlobals globals)
+        => (_wlSurface is { } surface ? new WaylandCursorImage(surface, _hotspotX, _hotspotY) : null, null);
 
     public void OnConnected(WaylandConnection connection, WaylandGlobals globals)
     {

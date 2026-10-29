@@ -9,7 +9,6 @@ using Avalonia.Wayland.Server.Persistent;
 using NWayland;
 using NWayland.Protocols.Wayland;
 using NWayland.Protocols.CursorShapeV1;
-using static NWayland.Protocols.CursorShapeV1.WpCursorShapeDeviceV1;
 
 namespace Avalonia.Wayland.Server.Transient;
 
@@ -17,6 +16,12 @@ partial class WaylandInputDispatcher : IDisposable
 {
     private readonly WaylandGlobals _globals;
     private readonly Dictionary<uint, Seat> _seats = new();
+
+    internal void OnCursorShapeManagerChanged()
+    {
+        foreach (var seat in _seats.Values)
+            seat.OnCursorShapeManagerChanged();
+    }
 
     internal static WXdgShellSurface? FindSurfaceForWlSurface(WlSurface? surface) =>
         surface != null && surface.Tags.TryGetValue(typeof(WXdgShellSurface), out var tag)
@@ -251,6 +256,8 @@ partial class WaylandInputDispatcher : IDisposable
             _pointerHandler?.NotifyCursorChanged(surface);
         }
 
+        internal void OnCursorShapeManagerChanged() => _pointerHandler?.OnCursorShapeManagerChanged();
+
         internal void SetDndCursor(StandardCursorType cursorType)
         {
             _pointerHandler?.SetDndCursor(cursorType);
@@ -309,11 +316,6 @@ partial class WaylandInputDispatcher : IDisposable
             _dispatcher = dispatcher;
             _seat = seat;
             _pointer = seat.WlSeat.GetPointer(new Listener(this));
-            if (_dispatcher._globals.CursorShapeManager is not null)
-            {
-                var manager = _dispatcher._globals.CursorShapeManager;
-                _cursorShapeDevice = manager.GetPointer(_pointer);
-            }
         }
 
         // Shared, stateless fallback used when a surface hasn't requested a specific cursor.
@@ -323,24 +325,35 @@ partial class WaylandInputDispatcher : IDisposable
         {
             if (_focusedSurface == null)
                 return;
-            var currentCursor = _focusedSurface.CurrentCursor ?? s_defaultCursor;
+            ApplyCursor(_focusedSurface.CurrentCursor ?? s_defaultCursor);
+        }
 
-            if (currentCursor is WaylandStandardCursor standardCursor &&
-                _cursorShapeDevice is not null)
+        private void ApplyCursor(WaylandCursor cursor)
+        {
+            var globals = _dispatcher._globals;
+            var (image, shape) = cursor.Resolve(globals);
+            if (shape is { } cursorShape && globals.CursorShapeManager is { } manager)
             {
-                var shape = WaylandCursorManager.GetCursorShape(standardCursor.CursorType);
-                if (shape is not null)
-                {
-                    _cursorShapeDevice.SetShape(_lastEnterSerial, shape.Value);
-                    return;
-                }
+                _cursorShapeDevice ??= manager.GetPointer(_pointer);
+                _cursorShapeDevice.SetShape(_lastEnterSerial, cursorShape);
             }
-            var image = currentCursor.Resolve(_dispatcher._globals);
-
-            if (image is { } cursor)
-                _pointer.SetCursor(_lastEnterSerial, cursor.Surface, cursor.HotspotX, cursor.HotspotY);
+            else if (image is { } cursorImage)
+                _pointer.SetCursor(_lastEnterSerial, cursorImage.Surface, cursorImage.HotspotX, cursorImage.HotspotY);
             else
                 _pointer.SetCursor(_lastEnterSerial, null, 0, 0);
+        }
+
+        private void DisposeCursorShapeDevice()
+        {
+            _cursorShapeDevice?.Destroy();
+            _cursorShapeDevice?.Dispose();
+            _cursorShapeDevice = null;
+        }
+
+        internal void OnCursorShapeManagerChanged()
+        {
+            DisposeCursorShapeDevice();
+            UpdateCursor();
         }
 
         internal void NotifyCursorChanged(WSurface surface)
@@ -361,22 +374,7 @@ partial class WaylandInputDispatcher : IDisposable
         /// </remarks>
         internal void SetDndCursor(StandardCursorType cursorType)
         {
-            if (_cursorShapeDevice is not null)
-            {
-                var shape = WaylandCursorManager.GetCursorShape(cursorType);
-                if (shape is not null)
-                {
-                    _cursorShapeDevice.SetShape(_lastEnterSerial, shape.Value);
-                    return;
-                }
-            }
-
-            var cursorInfo = _dispatcher._globals.CursorManager.GetCursor(cursorType);
-
-            if (cursorInfo is { } cursor)
-                _pointer.SetCursor(_lastEnterSerial, cursor.Surface, cursor.HotspotX, cursor.HotspotY);
-            else
-                _pointer.SetCursor(_lastEnterSerial, null, 0, 0);
+            ApplyCursor(new WaylandStandardCursor(cursorType));
         }
 
         private void ResetFrameState()
@@ -393,6 +391,7 @@ partial class WaylandInputDispatcher : IDisposable
 
         public void Dispose()
         {
+            DisposeCursorShapeDevice();
             _pointer.Release();
         }
 

@@ -32,7 +32,8 @@ class WaylandGlobals
     public WlDataDeviceManager? DataDeviceManager { get; }
     public ZwpLinuxDmabufV1? LinuxDmabuf { get; }
     public WpFractionalScaleManagerV1? FractionalScaleManager { get; }
-    public WpCursorShapeManagerV1? CursorShapeManager;
+    public WpCursorShapeManagerV1? CursorShapeManager { get; private set; }
+    private uint? _cursorShapeGlobalName;
     public WpViewporter? Viewporter { get; }
     public ZwpTextInputManagerV3? TextInputManagerV3 { get; }
     public ZxdgExporterV2? XdgExporter { get; }
@@ -67,10 +68,19 @@ class WaylandGlobals
             {
                 p.OnSeatGlobal(name, version);
             }
+            else if (@interface == WpCursorShapeManagerV1.ProxyType.Interface.Name && version >= 1
+                     && p.CursorShapeManager == null)
+            {
+                p.CursorShapeManager = eventSender.Bind<WpCursorShapeManagerV1>(name, Math.Min(version, 2), null);
+                p._cursorShapeGlobalName = name;
+                p.InputDispatcher.OnCursorShapeManagerChanged();
+            }
         }
 
         protected override void GlobalRemove(WlRegistry eventSender, uint name)
         {
+            if (p._cursorShapeGlobalName == name)
+                p.DisposeCursorShapeManager();
             p.InputDispatcher.OnSeatRemoved(name);
             p.GlobalRemoved?.Invoke(name);
         }
@@ -140,8 +150,6 @@ class WaylandGlobals
         WlShm = BindRequired<WlShm>(1, 1, new ShmListener(this));
         WlCompositor = BindRequired<WlCompositor>(4, 6, null);
         XdgWmBase = BindRequired<XdgWmBase>(3, 4, new XdgWmBaseListener());
-        CursorShapeManager = Bind<WpCursorShapeManagerV1>(1, 1, null);
-        CursorManager = new WaylandCursorManager(connection.Display, WlShm, WlCompositor);
         DataDeviceManager = Bind<WlDataDeviceManager>(3, 3, null);
         LinuxDmabuf = Bind<ZwpLinuxDmabufV1>(4, 4, null);
         FractionalScaleManager = Bind<WpFractionalScaleManagerV1>(1, 1, null);
@@ -190,11 +198,26 @@ class WaylandGlobals
     public WaylandConnection Connection { get; }
     public WaylandWorker Worker { get; }
     public WaylandInputDispatcher InputDispatcher { get; }
-    public WaylandCursorManager CursorManager { get; }
+    private WaylandCursorManager? _cursorManager;
+    // Compositor shapes and hidden cursors do not need local theme buffers or surfaces.
+    public WaylandCursorManager CursorManager => _cursorManager ??=
+        new WaylandCursorManager(Connection.Display, WlShm, WlCompositor);
 
     public void Dispose()
     {
         InputDispatcher.Dispose();
+        DisposeCursorShapeManager();
+        _cursorManager?.Dispose();
         Worker.PlatformGraphics.Reset();
+    }
+
+    private void DisposeCursorShapeManager()
+    {
+        var manager = CursorShapeManager;
+        CursorShapeManager = null;
+        _cursorShapeGlobalName = null;
+        InputDispatcher.OnCursorShapeManagerChanged();
+        manager?.Destroy();
+        manager?.Dispose();
     }
 }
